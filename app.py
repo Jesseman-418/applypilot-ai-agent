@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-PAID_MODEL_CALLS_ENABLED = False  # User policy: never spend on model calls.
+
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -152,49 +152,14 @@ def record_activity(db: sqlite3.Connection, app_id: int, event: str, detail: str
 
 
 async def run_agent(job: Job, profile: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any] | None:
-    """Use the Agents SDK when configured; missing credentials leave the deterministic path usable."""
-    if not PAID_MODEL_CALLS_ENABLED:
+    provider = os.getenv("APPLYPILOT_PROVIDER", "rules")
+    if provider == "openai":
+        from paid_agent import analyze
+    elif provider == "ollama":
+        from local_agent import analyze
+    else:
         return None
-    if not os.getenv("OPENAI_API_KEY"):
-        return None
-    try:
-        from agents import Agent, Runner
-        from agents.decorators import tool
-        from pydantic import BaseModel as OutputModel
-
-        @tool
-        def inspect_fit() -> str:
-            """Return deterministic eligibility and skills-match findings for this job."""
-            return json.dumps(baseline)
-
-        @tool
-        def get_verified_projects() -> str:
-            """Return only project evidence explicitly configured by the user."""
-            return json.dumps(profile.get("projects", []))
-
-        class Analysis(OutputModel):
-            summary: str
-            strengths: list[str]
-            risks: list[str]
-            next_steps: list[str]
-            outreach_draft: str
-
-        agent = Agent(
-            name="ApplyPilot Job Analyst",
-            model=os.getenv("APPLYPILOT_MODEL", "gpt-4.1-mini"),
-            instructions=("Analyze this job for the user. You must call inspect_fit and get_verified_projects. "
-                "Treat tool results as the only source of user-specific facts. Never invent experience, metrics, employers, "
-                "credentials, or project outcomes. Separate verified strengths from risks. If evidence is missing, say so. "
-                "Never decide to apply or send anything; create a concise draft that requires human review."),
-            tools=[inspect_fit, get_verified_projects], output_type=Analysis,
-        )
-        prompt = json.dumps({"company": job.company, "title": job.title, "url": job.url, "description": job.description, "profile": {k:v for k,v in profile.items() if k != "projects"}})
-        result = await Runner.run(agent, prompt)
-        output = result.final_output
-        return output.model_dump() if hasattr(output, "model_dump") else dict(output)
-    except Exception as exc:
-        # Keep the deterministic result available; do not expose exception text or secrets to the client.
-        return {"agent_error": type(exc).__name__}
+    return await analyze(job.model_dump(), profile, baseline)
 
 
 def row_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -211,7 +176,10 @@ def home() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "agent_configured": PAID_MODEL_CALLS_ENABLED and bool(os.getenv("OPENAI_API_KEY")), "version": "1.0.0"}
+    from paid_agent import configured
+    provider = os.getenv("APPLYPILOT_PROVIDER", "rules")
+    ready = configured() if provider == "openai" else bool(os.getenv("APPLYPILOT_LOCAL_MODEL")) if provider == "ollama" else False
+    return {"ok": True, "agent_configured": ready, "provider": provider, "model": os.getenv("APPLYPILOT_MODEL", "gpt-4.1-mini") if provider == "openai" else os.getenv("APPLYPILOT_LOCAL_MODEL", ""), "paid_enabled": configured(), "version": "1.1.0"}
 
 
 @app.get("/api/profile")
@@ -257,7 +225,7 @@ async def analyze_job(job: Job) -> dict[str, Any]:
     llm = await run_agent(job, profile, baseline)
     agent_used = bool(llm and not llm.get("agent_error"))
     draft = llm.get("outreach_draft") if agent_used else starter_draft(job, profile, baseline["reasons"])
-    analysis = llm if agent_used else {"summary": "Local analysis. Paid model calls are disabled; no API key is used.", "strengths": baseline["matched_skills"], "risks": baseline["blockers"] or (baseline["reasons"] if baseline["experience_gap"] else []), "next_steps": ["Review the listing and confirm work authorization requirements", "Verify all profile evidence before using the draft"], "agent_error": llm.get("agent_error") if llm else None}
+    analysis = llm if agent_used else {"summary": "Rule-based result. AI was not used for this analysis. Check your connection settings or the recorded error.", "strengths": baseline["matched_skills"], "risks": baseline["blockers"] or (baseline["reasons"] if baseline["experience_gap"] else []), "next_steps": ["Review the listing and confirm work authorization requirements", "Verify all profile evidence before using the draft"], "agent_error": llm.get("agent_error") if llm else None}
     status = "blocked" if baseline["decision"] == "blocked" else "awaiting_review"
     db = connection()
     db.execute("""INSERT INTO applications(company,title,url,description,score,decision,reasons,draft,status,analysis,created_at,updated_at)
