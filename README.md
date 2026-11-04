@@ -1,5 +1,7 @@
 # ApplyPilot
 
+**Current cost policy:** Paid model calls are hard-disabled in code, even if an API key exists. Only local deterministic analysis runs. The SDK integration below is retained for reference and is not active.
+
 An evidence-grounded job-search agent for people who want useful automation without handing over the final decision.
 
 Paste a job listing and ApplyPilot checks your configured constraints, compares the role with your profile, and prepares an editable outreach draft. With an OpenAI API key configured, an **OpenAI Agents SDK** agent calls two bounded tools—deterministic fit inspection and retrieval of user-entered project evidence—then returns a structured summary, risks, next steps, and draft. Every analysis and approval action is recorded in a local SQLite activity history. It never sends email or submits applications.
@@ -14,11 +16,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Add OPENAI_API_KEY to .env to enable the language-model agent.
+# No API key is needed. Paid model calls are disabled.
 uvicorn app:app --reload
 ```
 
-Open <http://127.0.0.1:8000>. Without an API key, the deterministic eligibility and fit workflow still works. With a key, the agent uses `gpt-4.1-mini` by default; override with `APPLYPILOT_MODEL`.
+Open <http://127.0.0.1:8000>. Without an API key, the deterministic eligibility and fit workflow still works. An API key alone cannot enable model calls; the code-level spending block remains active.
 
 ## Workflow
 
