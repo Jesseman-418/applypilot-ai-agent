@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+PAID_MODEL_CALLS_ENABLED = False  # User policy: never spend on model calls.
+
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 DB = os.getenv("APPLYPILOT_DB", str(ROOT / "applypilot.db"))
@@ -151,6 +153,8 @@ def record_activity(db: sqlite3.Connection, app_id: int, event: str, detail: str
 
 async def run_agent(job: Job, profile: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any] | None:
     """Use the Agents SDK when configured; missing credentials leave the deterministic path usable."""
+    if not PAID_MODEL_CALLS_ENABLED:
+        return None
     if not os.getenv("OPENAI_API_KEY"):
         return None
     try:
@@ -207,7 +211,7 @@ def home() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "agent_configured": bool(os.getenv("OPENAI_API_KEY")), "version": "1.0.0"}
+    return {"ok": True, "agent_configured": PAID_MODEL_CALLS_ENABLED and bool(os.getenv("OPENAI_API_KEY")), "version": "1.0.0"}
 
 
 @app.get("/api/profile")
@@ -253,7 +257,7 @@ async def analyze_job(job: Job) -> dict[str, Any]:
     llm = await run_agent(job, profile, baseline)
     agent_used = bool(llm and not llm.get("agent_error"))
     draft = llm.get("outreach_draft") if agent_used else starter_draft(job, profile, baseline["reasons"])
-    analysis = llm if agent_used else {"summary": "Rule-based first pass. Add an OpenAI API key to enable the language-model agent.", "strengths": baseline["matched_skills"], "risks": baseline["blockers"] or (baseline["reasons"] if baseline["experience_gap"] else []), "next_steps": ["Review the listing and confirm work authorization requirements", "Verify all profile evidence before using the draft"], "agent_error": llm.get("agent_error") if llm else None}
+    analysis = llm if agent_used else {"summary": "Local analysis. Paid model calls are disabled; no API key is used.", "strengths": baseline["matched_skills"], "risks": baseline["blockers"] or (baseline["reasons"] if baseline["experience_gap"] else []), "next_steps": ["Review the listing and confirm work authorization requirements", "Verify all profile evidence before using the draft"], "agent_error": llm.get("agent_error") if llm else None}
     status = "blocked" if baseline["decision"] == "blocked" else "awaiting_review"
     db = connection()
     db.execute("""INSERT INTO applications(company,title,url,description,score,decision,reasons,draft,status,analysis,created_at,updated_at)
