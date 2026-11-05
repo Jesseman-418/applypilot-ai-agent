@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -282,3 +282,131 @@ def delete_application(application_id: int) -> dict[str, bool]:
     db.execute("DELETE FROM applications WHERE id=?", (application_id,))
     db.commit(); db.close()
     return {"deleted": True}
+
+
+class AutopilotAnswers(BaseModel):
+    full_name: str = Field(default="", max_length=200)
+    email: str = Field(default="", max_length=250)
+    phone: str = Field(default="", max_length=80)
+    linkedin: str = Field(default="", max_length=500)
+    github: str = Field(default="", max_length=500)
+    location: str = Field(default="", max_length=200)
+    relocation: str = Field(default="", max_length=500)
+    notice_period: str = Field(default="", max_length=500)
+    work_authorization: str = Field(default="", max_length=1000)
+    interests_and_constraints: str = Field(default="", max_length=4000)
+    saved_answers: str = Field(default="", max_length=15000)
+    auto_submit: bool = False
+
+
+class ApplicationLink(BaseModel):
+    url: str = Field(min_length=10, max_length=1500)
+
+
+def private_json(name, default):
+    from automation import DATA
+    path = DATA / name
+    return json.loads(path.read_text()) if path.exists() else default
+
+
+@app.get('/api/autopilot/settings')
+def autopilot_settings():
+    return private_json('answers.json', AutopilotAnswers().model_dump())
+
+
+@app.put('/api/autopilot/settings')
+def update_autopilot_settings(body: AutopilotAnswers):
+    from automation import DATA
+    DATA.mkdir(exist_ok=True, mode=0o700)
+    path = DATA / 'answers.json'
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(body.model_dump()))
+    temporary.replace(path)
+    return {'saved': True}
+
+
+@app.get('/api/documents')
+def documents():
+    return [{k:v for k,v in document.items() if k not in ('path', 'text')} for document in private_json('documents.json', [])]
+
+
+@app.post('/api/documents')
+async def upload_document(file: UploadFile = File(...), kind: str = Form(...), description: str = Form('')):
+    import uuid
+    from automation import DATA, LOCK
+    if kind not in ('resume', 'cover_letter') or len(description) > 1000:
+        raise HTTPException(422, 'Choose resume or cover letter and a description under 1000 characters.')
+    suffix = Path(file.filename or '').suffix.lower()
+    if suffix not in ('.pdf', '.docx', '.txt'):
+        raise HTTPException(422, 'Use PDF, DOCX, or TXT files.')
+    content = await file.read(10 * 1024 * 1024 + 1)
+    if not content or len(content) > 10 * 1024 * 1024:
+        raise HTTPException(413, 'Upload a nonempty document under 10 MB.')
+    try:
+        import io
+        if suffix == '.pdf':
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(content))
+            extracted = '\n'.join(page.extract_text() or '' for page in reader.pages[:12])
+        elif suffix == '.docx':
+            import zipfile
+            from xml.etree import ElementTree
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                metadata = archive.getinfo('word/document.xml')
+                if metadata.file_size > 2 * 1024 * 1024:
+                    raise ValueError('Document text is too large')
+                tree = ElementTree.fromstring(archive.read('word/document.xml'))
+                extracted = ' '.join(tree.itertext())
+        else:
+            extracted = content.decode('utf-8')
+    except Exception as exc:
+        raise HTTPException(422, 'Could not read document text. Use a text PDF, DOCX, or UTF-8 TXT.') from exc
+    if not extracted.strip():
+        raise HTTPException(422, 'No readable text was found. Use a text-based document instead of a scanned image.')
+    DATA.mkdir(exist_ok=True, mode=0o700)
+    identifier = str(uuid.uuid4())
+    path = DATA / (identifier + suffix)
+    path.write_bytes(content)
+    path.chmod(0o600)
+    document = {'id': identifier, 'name': Path(file.filename).name, 'kind': kind, 'description': description, 'text': extracted[:12000], 'path': str(path)}
+    with LOCK:
+        saved = private_json('documents.json', [])
+        saved.append(document)
+        temporary = DATA / 'documents.tmp'
+        temporary.write_text(json.dumps(saved))
+        temporary.replace(DATA / 'documents.json')
+    return {k:v for k,v in document.items() if k not in ('path', 'text')}
+
+
+@app.post('/api/autopilot')
+def launch_autopilot(body: ApplicationLink):
+    from automation import start
+    settings = autopilot_settings()
+    if not settings['full_name'] or not settings['email']:
+        raise HTTPException(422, 'Save your full name and email in Autopilot setup first.')
+    saved_documents = private_json('documents.json', [])
+    if not any(document['kind'] == 'resume' for document in saved_documents):
+        raise HTTPException(422, 'Upload at least one resume before starting.')
+    try:
+        return start(body.url, load_profile(), settings, saved_documents)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get('/api/autopilot/{run_id}')
+def autopilot_run(run_id: str):
+    from automation import get_run
+    try:
+        return get_run(run_id)
+    except (ValueError, KeyError):
+        raise HTTPException(404, 'Run not found')
+
+
+@app.post('/api/autopilot/{run_id}/continue')
+def continue_autopilot(run_id: str):
+    from automation import WAKE, get_run
+    run = get_run(run_id)
+    if run.get('state') != 'paused' or run_id not in WAKE:
+        raise HTTPException(409, 'This browser run is not waiting for input.')
+    WAKE[run_id].set()
+    return {'continuing': True}
