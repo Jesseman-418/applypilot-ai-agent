@@ -32,3 +32,27 @@ Open http://127.0.0.1:8000. The local app stores records in SQLite. Choose `APPL
 ## Validation status
 
 Free preview and activation guards can be checked without a live model. A real OpenAI or local-model result still requires verification after you provide credentials or install a model. No live job discovery, Gmail integration, resume parsing, or automatic submission is included.
+
+## Local Autopilot — apply from a job link
+
+The Python dashboard now opens on Autopilot. Save your application identity, relocation and notice-period answers, work authorization, and any reusable Q&A. Set your experience, skills, and target roles under My profile. Upload multiple resumes and cover letters with descriptions of the roles each suits. PDF, DOCX, and TXT text is extracted locally so the planner can use the evidence and select files.
+
+Update and install the browser on your Mac:
+
+```bash
+git pull --ff-only
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m playwright install chromium
+APPLYPILOT_PROVIDER=ollama APPLYPILOT_LOCAL_MODEL=qwen3:4b-instruct APPLYPILOT_ENABLE_PAID_API=false uvicorn app:app --reload
+```
+
+Paste only the job URL in Autopilot. A visible, dedicated Chromium session reads the listing, checks fit against your saved experience and interests, and fills standard native form controls. Unsuitable or insufficiently described listings are skipped. Login, CAPTCHA, missing answers, and custom controls pause the run for input in that browser. Click Continue in the dashboard after finishing the requested step.
+
+Automatic submission is an explicit saved setting, off initially. When enabled, a known final submission button can be clicked once after required native controls are valid and the planner has no unknown questions. Ambiguous confirmation is recorded as confirmation-needed. Previously attempted submission URLs are blocked from automatic reattempts. The browser remains open for review until you click Continue.
+
+For suitable roles, a LinkedIn first-degree people search opens in the same dedicated browser. Sign in there when prompted. The agent reads visible search results and only retains outreach candidates with a quoted first-degree marker and company evidence. Messages are drafted in the dashboard; there is no send-message action. Search evidence can be incomplete or stale, so review employer and connection details.
+
+Uploads, extracted text, application answers, run logs, and the dedicated browser session live in ignored `private_data/`. Treat this directory as personal data. Run only on your own machine. This feature uses the configured local Ollama model and Playwright; the Vercel dashboard does not launch browsers on your Mac.
+
+Support is currently for visible standard HTML form controls. Custom ATS widgets, popups/new tabs, embedded forms, and site-specific application flows may require manual handoff. End-to-end model/browser application behavior must be verified on your machine before relying on automatic submission. No real job application or LinkedIn message was sent while implementing this feature.
