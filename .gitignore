@@ -5,3 +5,7 @@ __pycache__/
 *.db
 .pytest_cache/
 .DS_Store
+
+private_data/
+web/node_modules/
+web/.next/
