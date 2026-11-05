@@ -9,6 +9,7 @@ import re
 import socket
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -79,8 +80,20 @@ async def ask_local(prompt):
         return json.loads(response.json()['message']['content'])
 
 
+MODEL_TIMEOUT_SECONDS = 170
+
+
 def decide(prompt):
-    return asyncio.run(asyncio.wait_for(ask_local(prompt), timeout=170))
+    # Playwright's synchronous API owns an active asyncio loop in the browser
+    # thread. Ollama's async HTTP client must run in a separate thread/loop.
+    async def request_with_deadline():
+        return await asyncio.wait_for(ask_local(prompt), timeout=MODEL_TIMEOUT_SECONDS)
+
+    def run_model():
+        return asyncio.run(request_with_deadline())
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='applypilot-model') as executor:
+        return executor.submit(run_model).result()
 
 
 def pause(run, message):
